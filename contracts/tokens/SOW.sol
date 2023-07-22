@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.17;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -11,7 +11,10 @@ contract SOW is Initializable, OwnableUpgradeable, ERC20Upgradeable, ISOW {
     address public minter;
 
     modifier onlyMinter() {
-        require(msg.sender == minter, "SOW: only minter allowed");
+        require(
+            msg.sender == minter || msg.sender == owner(),
+            "SOW: only minter allowed"
+        );
         _;
     }
 
@@ -23,6 +26,7 @@ contract SOW is Initializable, OwnableUpgradeable, ERC20Upgradeable, ISOW {
     function initialize() public initializer {
         __ERC20_init("Sea of Wisdom Token", "SOW");
         __Ownable_init();
+
         minter = msg.sender;
         emit MinterChanged(address(0), minter);
     }
@@ -46,10 +50,10 @@ contract SOW is Initializable, OwnableUpgradeable, ERC20Upgradeable, ISOW {
         }
     }
 
-    function changeMinter(address newAddress) external onlyOwner {
-        require(newAddress != address(0), "SOW: newAddress is zero");
-        address prevAddress = minter;
-        minter = newAddress;
-        emit MinterChanged(prevAddress, newAddress);
+    function changeMinter(address minterAddress) external onlyOwner {
+        require(minterAddress != address(0), "SOW: minterAddress is zero");
+
+        emit MinterChanged(minter, minterAddress);
+        minter = minterAddress;
     }
 }

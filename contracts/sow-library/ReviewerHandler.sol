@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.17;
 
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
@@ -11,13 +11,15 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/cryptography/ECDSAUpgradeable.sol";
 
 import "./AuthorHandler.sol";
+import "../interfaces/IReviewerHandler.sol";
 
 /// @notice functions require refactoring on adding a new asset
 contract ReviewerHandler is
     PausableUpgradeable,
     ReentrancyGuardUpgradeable,
     OwnableUpgradeable,
-    AuthorHandler
+    AuthorHandler,
+    IReviewerHandler
 {
     using ECDSAUpgradeable for bytes32;
 
@@ -27,103 +29,102 @@ contract ReviewerHandler is
 
     mapping(uint256 => mapping(address => uint256)) internal _reviewerRewards;
 
-    struct Review {
-        address reviewer;
-        uint256 workID;
-        uint256 status;
-    }
+    uint8 public minNumReadings;
 
-    uint256[47] private __reserved;
+    uint256[46] private __reserved;
 
     function __ReviewerHandler_init() internal onlyInitializing {
         __AuthorHandler_init();
 
         reviewerDepositAmount = 50 ether;
+        minNumReadings = 2;
     }
 
+    /// @notice charges reviewer deposit fees(reviewerDepositAmount)
     function becomeReviewer() public {
         address participantAddress = msg.sender;
-        _makeReviewer(participantAddress);
-
-        require(
-            sowToken.transferFrom(
-                participantAddress,
-                address(this),
-                reviewerDepositAmount
-            ),
-            "Library: transferFrom failed"
-        ); // TODO
-
-        //
-    }
-
-    // function _addReviewerRewards(
-    //     uint256 workId,
-    //     uint128 newStatus
-    // ) external onlyOwner {
-    //     SPT work = factory.getWorkByID(workId);
-    //     work.setStatus(newStatus);
-
-    //     // emit
-    // }
-
-    function claimReviewerRewards(uint256 workId) external nonReentrant {
-        address reviewer = msg.sender;
-        require(
-            isAbleToClaimForWork(workId, reviewer),
-            "ReviewerHandler: rewards is zero"
+        _transferFromSowToken(
+            participantAddress,
+            address(this),
+            reviewerDepositAmount
         );
 
-        uint256 rewards = _reviewerRewards[workId][reviewer];
-        delete _reviewerRewards[workId][reviewer];
-
-        require(
-            sowToken.transfer(reviewer, rewards),
-            "Library: transfer failed"
-        ); // TODO
+        _makeReviewer(participantAddress);
     }
 
-    function isAbleToClaimForWork(
-        uint256 workId,
+    /// @dev admin method
+    function makeReviewer(address participantAddress) external onlyOwner {
+        _makeReviewer(participantAddress);
+    }
+
+    function _makeReviewer(address participantAddress) internal {
+        Participant storage participant = participants[participantAddress];
+        require(
+            participant._address != address(0),
+            "SowLibrary: there is no participant"
+        );
+
+        emit RoleChanged(participantAddress, participant._role, Role.Reviewer);
+
+        participant._role = Role.Reviewer;
+    }
+
+    function claimReviewerRewards(uint256 paperId) external nonReentrant {
+        address reviewer = msg.sender;
+        require(
+            isAbleToClaimForPaper(paperId, reviewer),
+            "SowLibrary: is not able to claim"
+        );
+
+        uint256 rewards = _reviewerRewards[paperId][reviewer];
+        delete _reviewerRewards[paperId][reviewer];
+        _transferSowToken(reviewer, rewards);
+
+        emit ReviewerRewardsClaimed(reviewer, rewards);
+    }
+
+    function isAbleToClaimForPaper(
+        uint256 paperId,
         address reviewerAddress
     ) public view returns (bool) {
-        uint256 rewards = _reviewerRewards[workId][reviewerAddress];
+        uint256 rewards = _reviewerRewards[paperId][reviewerAddress];
         if (rewards == 0) {
             return false;
         }
-        // get work's readings
-        SPT work = factory.getWorkByID(workId);
-        if (work.getTotalReadings() < 10) {
+
+        SPT token = getPaperById(paperId);
+        if (token.getTotalReadings() < minNumReadings) {
             return false;
         }
+
         return true;
     }
 
-    function getReviewerRewardsForWork(
-        uint256 workId,
+    function getReviewerRewardsForPaper(
+        uint256 paperId,
         address reviewerAddress
     ) public view returns (uint256) {
-        return _reviewerRewards[workId][reviewerAddress];
+        return _reviewerRewards[paperId][reviewerAddress];
     }
 
-    function _addReviewersRewardsForWork(
-        uint256 workId,
+    function _addReviewersRewardsForPaper(
+        uint256 paperId,
         uint256 rewards
     ) internal {
-        SPT work = factory.getWorkByID(workId);
+        SPT token = getPaperById(paperId);
         require(
-            work.status() == 2,
-            "SowLibrary: work status is not appropriate"
+            token.status() == 2,
+            "SowLibrary: paper status is not appropriate"
         );
 
-        address[] memory reviewers = work.getReviewers();
+        address[] memory reviewers = token.getReviewers();
         for (uint8 i = 0; i < reviewers.length; i++) {
-            _reviewerRewards[workId][reviewers[i]] += rewards;
+            _reviewerRewards[paperId][reviewers[i]] += rewards;
         }
     }
 
-    function addReviewsForWork(
-        uint256 workId,
+    function addReviewsForPaper(
+        uint256 paperId,
         address[] memory reviewerAddresses,
         uint8[] memory reviews
     ) external nonReentrant onlyOwner {
@@ -133,15 +134,18 @@ contract ReviewerHandler is
             "SowLibrary: inconsistent input data"
         );
 
-        SPT work = factory.getWorkByID(workId);
+        SPT token = getPaperById(paperId);
         require(
-            work.status() == 0,
-            "SowLibrary: work status is not appropriate"
+            token.status() == 0,
+            "SowLibrary: paper status is not appropriate"
         );
 
         uint256 totalVotes;
         for (uint8 i = 0; i < reviews.length; i++) {
             address reviewerAddress = reviewerAddresses[i];
+            if (token.isAuthor(reviewerAddress)) {
+                continue;
+            }
             uint8 decision = reviews[i];
             if (decision == 0 || reviewerAddress == address(0)) {
                 continue;
@@ -149,39 +153,36 @@ contract ReviewerHandler is
             if (!isReviewer(reviewerAddress)) {
                 continue;
             }
-            work.setReviews(reviewerAddress, decision);
+            //  token.setReview(reviewerAddress, decision);
             totalVotes += decision;
         }
-        console.log("totalVotes: ", totalVotes);
-        // n=3 -> ? > 6*2/3 = 4
+
         if (
             totalVotes * maxPercent >= (4 * numberOfReviewers * maxPercent) / 3
         ) {
-            work.setStatus(2); // approved
+            token.setStatus(2); // approved
         } else {
-            work.setStatus(1); // declined
+            token.setStatus(1); // declined
         }
     }
 
     function publishReviewsBatch(
-        uint256 workId,
+        uint256 paperId,
         string[] calldata reviews,
         bytes[] calldata reviewSignatures
     ) external nonReentrant onlyOwner {
-        require(reviews.length == reviewSignatures.length, "SowLibrary: "); // TODO
+        require(
+            reviews.length == reviewSignatures.length,
+            "SowLibrary: inconsistent input data"
+        );
 
-        SPT work = factory.getWorkByID(workId);
-        require(work.status() == 0, "SowLibrary: work has the wrong status");
+        SPT token = getPaperById(paperId);
+        require(token.status() == 0, "SowLibrary: paper has the wrong status");
 
         // go throw reviews and verify each of them
         for (uint8 i = 0; i < reviews.length; i++) {
             bytes32 signedMessageHash = keccak256(abi.encode(reviews[i]))
                 .toEthSignedMessageHash();
-
-            console.log(
-                " isReviewer(signedMessageHash.recover(reviewSignatures[i]): ",
-                signedMessageHash.recover(reviewSignatures[i])
-            );
 
             require(
                 isReviewer(signedMessageHash.recover(reviewSignatures[i])),
@@ -190,17 +191,7 @@ contract ReviewerHandler is
         }
     }
 
-    // function updatePaperStatus(
-    //     uint256 workId,
-    //     uint128 newStatus
-    // ) external onlyOwner {
-    //     SPT work = factory.getWorkByID(workId);
-    //     work.setStatus(newStatus);
-
-    //     // emit
-    // }
-
     function isReviewer(address reviewerAddress) public view returns (bool) {
-        return _reviewerDeposits[reviewerAddress] > 0;
+        return _reviewerDeposits[reviewerAddress] >= reviewerDepositAmount;
     }
 }

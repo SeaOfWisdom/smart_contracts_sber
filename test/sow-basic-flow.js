@@ -1,8 +1,6 @@
 const { expect, assert } = require("chai");
 const { ethers } = require("hardhat");
 
-// const toBN = ethers.BigNumber.from;
-
 let tx,
   workID,
   reviews = [];
@@ -12,10 +10,6 @@ let sowToken, sowLibrary;
 let owner, reader1, reader2, author1, author2, reviewer1, reviewer2, admin1, admin2, participants;
 
 describe("SOW", function () {
-  // We define a fixture to reuse the same setup in every test.
-  // We use loadFixture to run this setup once, snapshot that state,
-  // and reset Hardhat Network to that snapshot in every test.
-
   describe("Basic flow", function () {
     before(async function () {
       [sowLibrary, sowToken] = await initSOW();
@@ -47,7 +41,7 @@ describe("SOW", function () {
       await tx.wait();
     });
 
-    it("check the role of new admins", async function () {
+    it("check the role of the new admins", async function () {
       assert.equal((await sowLibrary.getRole(admin1.address)).toString(), "5");
 
       assert.equal((await sowLibrary.getRole(admin2.address)).toString(), "5");
@@ -102,58 +96,82 @@ describe("SOW", function () {
       await sowLibrary.connect(reviewer2).becomeReviewer();
     });
 
-    it("author1 publishes a work", async function () {
+    it("owner publishes author1's paper", async function () {
       workID = 11111111;
-      await sowLibrary.connect(owner).publishWork([author1.address], "My first work", "URL_AUTHOR_1", workID);
+      await sowLibrary.connect(owner).publishPaper([author1.address], "My first work", "URL_AUTHOR_1", workID, 1000);
     });
 
-    it("get author1's works", async function () {
-      const worksData = await sowLibrary.getWorksByAuthor(author1.address);
-      console.log(worksData);
+    it("owner tries to publish author1's paper again", async function () {
+      await expect(
+        sowLibrary.connect(owner).publishPaper([author1.address], "My first work", "URL_AUTHOR_1", workID, 1000)
+      ).to.be.revertedWith("SowLibrary: paper already exists");
     });
 
-    it("reader tries to purchase the work", async function () {
-      await sowToken.connect(reader1).approve(sowLibrary.address, hre.ethers.utils.parseEther("10"));
-
-      console.log(`balance of author before: ${(await sowToken.balanceOf(author1.address)).toString()}`);
-
-      await expect(sowLibrary.connect(reader1).purchaseWork(workID)).to.be.revertedWith("SowLibrary: paper is not readable");
-
-      console.log(`balance of author after: ${(await sowToken.balanceOf(author1.address)).toString()}`);
+    it("get SPT address by work id", async function () {
+      console.log(`spt work address: ${(await sowLibrary.getPaperById(workID)).toString()}`);
     });
 
-    it("add reviews on work", async function () {
-      await sowLibrary.connect(owner).addReviewsForWork(workID, [reviewer1.address, reviewer2.address], [2, 2]);
+    it("set reviews", async function () {
+      const paperAddres = (await sowLibrary.getPaperById(workID)).toString();
+      const SPTTokenFactory = await hre.ethers.getContractFactory("SPT");
+      const sptToken = await SPTTokenFactory.attach(paperAddres);
+
+      await sptToken.setReview(reviewer1.address, true);
+
+      await sptToken.setReview(reviewer2.address, false);
+
+      console.log((await sptToken.getReviewerDecision(reviewer1.address)).toString());
+
+      console.log((await sptToken.getReviewerDecision(reviewer2.address)).toString());
     });
 
-    it("get work status", async function () {
-      const paperData = await sowLibrary.getWorksByAuthor(author1.address);
-      const paperAddress = paperData[0];
+    // it("get author1's works", async function () {
+    //   const worksData = await sowLibrary.getWorksByAuthor(author1.address);
+    //   console.log(worksData);
+    // });
 
-      const SPTFactory = await hre.ethers.getContractFactory("SPT");
-      const paper = SPTFactory.attach(paperAddress);
+    // it("reader tries to purchase the paper", async function () {
+    //   await sowToken.connect(reader1).approve(sowLibrary.address, hre.ethers.utils.parseEther("10"));
 
-      console.log(`paper status: ${await paper.status()}`);
+    //   console.log(`balance of author before: ${(await sowToken.balanceOf(author1.address)).toString()}`);
+
+    //   await expect(sowLibrary.connect(reader1).purchasePaper(workID)).to.be.revertedWith("SowLibrary: paper is not readable");
+
+    //   console.log(`balance of author after: ${(await sowToken.balanceOf(author1.address)).toString()}`);
+    // });
+
+    it("add reviews on paper", async function () {
+      await sowLibrary.connect(owner).addReviewsForPaper(workID, [reviewer1.address, reviewer2.address], [2, 2]);
     });
 
-    it("reader purchases the work", async function () {
+    // it("get paper status", async function () {
+    //   const paperData = await sowLibrary.getWorksByAuthor(author1.address);
+    //   const paperAddress = paperData[0];
+
+    //   const SPTFactory = await hre.ethers.getContractFactory("SPT");
+    //   const paper = SPTFactory.attach(paperAddress);
+
+    //   console.log(`paper status: ${await paper.status()}`);
+    // });
+
+    it("reader purchases the paper", async function () {
       await sowToken.connect(reader1).approve(sowLibrary.address, hre.ethers.utils.parseEther("100"));
 
       console.log(`balance of author before: ${(await sowToken.balanceOf(author1.address)).toString()}`);
 
-      await sowLibrary.connect(reader1).purchaseWork(workID);
+      await sowLibrary.connect(reader1).purchasePaper(workID);
 
       console.log(`balance of author after: ${(await sowToken.balanceOf(author1.address)).toString()}`);
     });
 
-    it("reviewers verify their rewards", async function () {
-      console.log(`pending reviewer1 rewards: ${(await sowLibrary.getReviewerRewardsForWork(workID, reviewer1.address)).toString()}`);
+    // it("reviewers verify their rewards", async function () {
+    //   console.log(`pending reviewer1 rewards: ${(await sowLibrary.getReviewerRewardsForWork(workID, reviewer1.address)).toString()}`);
 
-      console.log(`pending reviewer2 rewards: ${(await sowLibrary.getReviewerRewardsForWork(workID, reviewer2.address)).toString()}`);
+    //   console.log(`pending reviewer2 rewards: ${(await sowLibrary.getReviewerRewardsForWork(workID, reviewer2.address)).toString()}`);
 
-      console.log(`is able to claim(reviewer1) rewards: ${(await sowLibrary.isAbleToClaimForWork(workID, reviewer1.address)).toString()}`);
-      console.log(`is able to claim(reviewer2) rewards: ${(await sowLibrary.isAbleToClaimForWork(workID, reviewer2.address)).toString()}`);
-    });
+    //   console.log(`is able to claim(reviewer1) rewards: ${(await sowLibrary.isAbleToClaimForWork(workID, reviewer1.address)).toString()}`);
+    //   console.log(`is able to claim(reviewer2) rewards: ${(await sowLibrary.isAbleToClaimForWork(workID, reviewer2.address)).toString()}`);
+    // });
 
     return;
     // it("admin pushes reviews on the work", async function () {
@@ -178,18 +196,12 @@ describe("SOW", function () {
 
     //   await sowLibrary.publishReviewsBatch(workID, [ethers.utils.arrayify(data)], reviews);
     // });
-
-    return;
-
-    it("confirm that reader1 has purchased the work", async function () {
-      console.log();
-    });
-    return;
   });
 });
 
 const initSOW = async () => {
   console.log(`... Initialization of SOW ...`);
+
   // 1. SOW token
   const SowTokenFactory = await hre.ethers.getContractFactory("SOW");
   const sowToken = await SowTokenFactory.deploy();
@@ -200,16 +212,15 @@ const initSOW = async () => {
   const sowLibrary = await SowLibraryFactory.deploy();
   await sowLibrary.initialize();
 
-  await sowLibrary.setToken(sowToken.address);
+  await sowLibrary.setSowToken(sowToken.address);
   await sowToken.changeMinter(sowLibrary.address);
 
   // 3. SOW Work Factory
-
-  const PaperFactoryFactory = await hre.ethers.getContractFactory("PaperFactory");
+  const PaperFactoryFactory = await hre.ethers.getContractFactory("TokenFactory");
   const factory = await PaperFactoryFactory.deploy();
 
-  await sowLibrary.setWorkFactory(factory.address);
-  await factory.setLibrary(sowLibrary.address);
+  await sowLibrary.setFactory(factory.address);
+  await factory.setMinter(sowLibrary.address);
 
   return [sowLibrary, sowToken];
 };
